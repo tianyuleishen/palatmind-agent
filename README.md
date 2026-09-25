@@ -1,196 +1,200 @@
-# PalatMind — Windows 桌面 AI 智能体
+<div align="right">
 
-PalatMind 是一个运行在 Windows 上的桌面 AI 智能体（Desktop Agent）：它像人一样使用电脑——看得见屏幕、看得懂页面、点得准鼠标，把你说的一句话变成一步步真实执行的操作，执行成功的流程还能沉淀成一键复放的自动化脚本。
+English | [简体中文](README.zh-CN.md)
 
-这个仓库**不包含源码**，只分享我们在做 GUI 自动化过程中打磨的核心技术思路：如何让 Agent 的屏幕感知与鼠标操作做到"看得清、定位准、点得稳"。如果你在开发同类 Agent，希望这些经验能帮你少踩坑。
+</div>
 
-- 官网与免费下载：https://palatmind.com/download/
-- 使用文档：https://palatmind.com/docs/
-- 问题与交流：[Issues](https://github.com/tianyuleishen/palatmind-agent/issues)
+# PalatMind — Windows Desktop AI Agent
+
+PalatMind is an AI agent that runs on Windows and uses your computer the way a person does — it sees the screen, understands the page, and clicks with precision. Give it a single sentence and it becomes real, step-by-step operations on your desktop. Workflows that succeed once can be saved as one-click replayable automation scripts.
+
+- Download: https://palatmind.com/download/
+- Documentation: https://palatmind.com/docs/
+- Questions & feedback: [Issues](https://github.com/tianyuleishen/palatmind-agent/issues)
 
 ---
 
-# 让 GUI 自动化更精准：从看见屏幕到沉淀脚本
+# Making GUI Automation Precise: From Seeing the Screen to Replayable Scripts
 
-让 AI 操作电脑，难点从来不是"会调用鼠标 API"，而是**看得清、定位准、点得稳**。下面按一条完整的执行链路展开：OCR 与图标识别 → 页面理解 → 鼠标精准操作 → 逐步执行 → 成功案例沉淀。
+For an AI operating a computer, the hard part is never "calling the mouse API" — it is **seeing clearly, locating precisely, and clicking reliably**. The full pipeline: OCR & icon recognition → page understanding → precise mouse control → step-by-step execution → distilling successful runs into scripts.
 
-## 一、看得见屏幕：OCR 与图标元素小模型
+## 1. Seeing the Screen: OCR + a Small Icon-Element Model
 
-Agent 面对屏幕的第一步是把像素变成结构化信息。纯靠大模型"看图说话"是不够的：分辨率不足的文字认不清、小图标的语义猜不准、坐标经常飘。我们的做法是 **OCR 精准识别 + 图标元素小模型** 双通道感知。
+An agent's first job is turning pixels into structured information. Relying on a large model to "look at the picture" is not enough: small text gets misread, icon semantics get guessed wrong, coordinates drift. Our approach is dual-channel perception: **precise OCR + a lightweight icon-element model**.
 
-### 1. OCR：把文字连同坐标一起拿到
+### 1.1 OCR: get the text together with its coordinates
 
-截图直接丢给 OCR，效果往往很差：系统 UI 文字小、深色主题对比度低、高分屏缩放复杂。我们在送入 OCR 之前做了这些事：
+Feeding a raw screenshot straight into OCR works poorly: system UI text is tiny, dark themes have low contrast, and high-DPI scaling complicates everything. Before recognition, we:
 
-- **放大预处理**：对截图做 2 倍放大再识别，小字号（如任务栏、菜单栏 12px 文字）的识别率显著提升；
-- **分层识别**：先整屏识别拿到全局布局，再对识别置信度低的区域裁剪局部放大重识别；
-- **结构化输出**：不只要文字内容，还要每个文本块的**外接框坐标 + 置信度**，后续定位全靠它。
+- **Upscale preprocessing**: 2x upscaling dramatically improves recognition of small UI text (taskbar, menus at ~12px);
+- **Layered recognition**: a full-screen pass captures the global layout, then low-confidence regions are cropped, upscaled, and re-recognized;
+- **Structured output**: not just text — every text block comes with its **bounding box + confidence**, which everything downstream depends on.
 
 ```text
-# 伪代码：结构化 OCR 输出
+# Pseudocode: structured OCR output
 TextBlock {
-    text: "设置",           # 识别出的文字
-    box: (x, y, w, h),     # 在截图中的位置
-    confidence: 0.97       # 识别置信度
+    text: "Settings",
+    box: (x, y, w, h),     # position on the screenshot
+    confidence: 0.97
 }
 ```
 
-### 2. 图标元素小模型：OCR 认不出的交给它
+### 1.2 The small icon-element model: for what OCR can't read
 
-很多可点击元素根本没有文字：关闭按钮的 ×、汉堡菜单 ≡、工具栏图标、图片按钮。这类元素我们训练/使用**轻量目标检测模型**（YOLO 类）+ **图标语义分类**：
+Many clickable elements carry no text at all: the × close button, hamburger menus, toolbar icons, image buttons. For these we use a **lightweight object detection model** (YOLO-class) plus **icon semantic classification**:
 
-- **检测**：在截图中框出所有 UI 元素（按钮、输入框、图标、开关…），输出外接框；
-- **分类**：对每个框判断元素类型和语义（这是"搜索图标"、这是"播放按钮"）；
-- **轻量化**：模型必须小、快，能在一秒内完成单屏推理，否则 Agent 每一步都在等它。
+- **Detect**: box every UI element on screen (buttons, inputs, icons, toggles…);
+- **Classify**: judge each box's type and semantics (that's a "search icon", that's a "play button");
+- **Keep it light**: the model must be small and fast — a single screen should be processed within a second, or the agent spends its life waiting.
 
-### 3. 双通道融合
+### 1.3 Fusing the two channels
 
-OCR 的文字块 + 小模型的图标框合并成一张"元素清单"，每个元素带：类型、文本/语义、坐标、置信度。这张清单就是下一步页面理解的输入。
+OCR text blocks + model icon boxes merge into a single **element list**, each entry carrying: type, text/semantics, coordinates, confidence. That list is the input to page understanding.
 
-## 二、看得懂页面：知道该点的元素在什么位置
+## 2. Understanding the Page: Knowing Where the Target Element Lives
 
-拿到元素清单只是第一步。用户说"点击设置"，页面上有 20 个元素，哪个才是"设置"？这一步的核心是**从元素清单到目标坐标的推理**。
+An element list is only the beginning. The user says "click Settings" and the screen has 20 elements — which one? The core of this stage is **reasoning from the element list to a target coordinate**.
 
-### 1. 布局分区理解
+### 2.1 Layout zoning
 
-先按视觉位置把屏幕分成结构化区域：标题栏、侧边栏、主内容区、底部状态栏。"设置"大概率在侧边栏或标题栏，而不是正文中间——区域先验能大幅缩小搜索范围。
+First segment the screen into structured regions: title bar, sidebar, main content, status bar. "Settings" is most likely in the sidebar or title bar, not the middle of the body — regional priors massively shrink the search space.
 
-### 2. 列表行成组
+### 2.2 Row grouping
 
-文件列表、消息列表、搜索结果……这类 UI 里，一行是由多个元素组成的整体（图标 + 标题 + 摘要 + 操作按钮）。必须把同一行的元素**聚合成一个逻辑单元**，否则会出现"点到行内空白处、点偏到相邻行"的事故。
+File lists, chat threads, search results — in these UIs a row is one logical whole (icon + title + summary + actions). Elements on the same row must be **merged into a single logical unit**, otherwise you get "clicked the blank space inside the row" or "clicked the neighboring row" accidents.
 
 ```text
-# 伪代码：同一 y 轴范围内、x 相邻的元素聚合成一行
-if 垂直间距 < 阈值 and 元素高度相近:
-    归入同一行 RowGroup
-点击目标 = RowGroup 的可点击区域
+# Pseudocode: group elements into rows by y-axis proximity
+if vertical_gap < threshold and heights are similar:
+    merge into the same RowGroup
+click_target = RowGroup's clickable area
 ```
 
-### 3. 父子包含与状态理解
+### 2.3 Parent-child containment and state
 
-- **父子包含**：图标属于哪个按钮、文字属于哪个卡片——点子元素实际要点父容器的可点击区域；
-- **状态识别**：按钮是置灰还是可用？弹窗是否遮挡了目标？输入框是否已聚焦？状态不对就直接操作，必然失败。
+- **Parent-child**: an icon belongs to a button, a label belongs to a card — clicking the child actually means clicking the parent's clickable area;
+- **State**: is the button disabled? Is a dialog covering the target? Is the input focused? Operating on the wrong state is guaranteed failure.
 
-### 4. 输出：目标点击坐标
+### 2.4 Output: a target coordinate
 
-页面理解的最终输出非常朴素——**一个坐标 + 置信度**。所有上层推理（语义匹配、区域先验、行成组、状态过滤）都是为了算出这个坐标，并附带"我有多大把握"。把握不足时宁可触发确认或重试，也不盲点。
+Page understanding ultimately produces something very plain — **a coordinate + confidence**. All the reasoning above (semantic matching, regional priors, row grouping, state filtering) exists to compute that coordinate and attach "how sure I am". When confidence is low, prefer confirmation or retry over a blind click.
 
-## 三、点得准：鼠标的正确使用
+## 3. Clicking with Precision
 
-坐标算出来了，鼠标操作本身也有大量细节。这一步做不好，前面全白费。
+The coordinate is computed — but the mouse operation itself is full of details. Get this wrong and everything above is wasted.
 
-### 1. 区分操作类型
+### 3.1 Match the operation to the scenario
 
-| 场景 | 操作 |
-|------|------|
-| 打开文件/确认按钮 | 单击 |
-| 打开桌面图标/进入文件夹 | 双击 |
-| 唤出上下文菜单 | 右键 |
-| 移动文件/调整窗口 | 按下→移动→释放（拖拽） |
-| 浏览长页面 | 滚轮（注意方向与幅度） |
+| Scenario | Operation |
+|----------|-----------|
+| Open a file / confirm button | Single click |
+| Launch a desktop icon / enter a folder | Double click |
+| Open a context menu | Right click |
+| Move a file / resize a window | Press → move → release (drag) |
+| Scroll a long page | Wheel (mind direction and amount) |
 
-### 2. 双击不是"快速点两次"那么简单
+### 3.2 A double click is not just "two fast clicks"
 
-Windows 有系统级 `DoubleClickTime`（默认约 500ms）和 `DoubleClickSize`（判定区域）。程序化双击时两次点击的间隔和位移必须落在阈值内，否则会被系统识别为两次单击。同理，双击间隔也不能快到被应用忽略。
+Windows has a system-level `DoubleClickTime` (~500ms by default) and a `DoubleClickSize` tolerance zone. Programmatic double clicks must land both clicks within those thresholds, or the system reads them as two single clicks. The opposite failure also exists: click too fast and the app ignores the second one.
 
-### 3. 拖拽要分段插值
+### 3.3 Drags need interpolated segments
 
-直接"从 A 坐标瞬移到 B 坐标再释放"，很多应用（尤其是自绘 UI、游戏窗口、网页拖拽）根本不响应。正确做法：
+Teleporting the cursor from A to B and releasing will simply not register in many apps (custom-drawn UIs, game windows, web drag-and-drop). The right way:
 
 ```text
-# 伪代码：拖拽分段插值
-mouse_down(起点)
-循环: 每 10~20px 移动一步, 步间 sleep 数毫秒   # 模拟人手的连续轨迹
-mouse_up(终点)
+# Pseudocode: drag with interpolated segments
+mouse_down(start)
+loop: move 10~20px per step, sleep a few ms between steps  # mimic a human hand
+mouse_up(end)
 ```
 
-### 4. 点击后的即时确认
+### 3.4 Verify immediately after every click
 
-每次点击后立刻验证"预期效果是否出现"：窗口标题变了没？弹窗出来了没？输入框聚焦了没？**点完不确认 = 埋雷**。确认失败马上进入重试逻辑，而不是等整个任务跑完才发现第一步就错了。
+After each click, check right away that the expected effect appeared: did the window title change? Did the dialog open? Did the input get focus? **A click without verification is a landmine.** On failure, retry immediately instead of discovering at the end of the task that step one already went wrong.
 
-## 四、一步一步执行
+## 4. Step-by-Step Execution
 
-单点操作准了之后，任务层面需要一套可靠的执行框架。
+Once individual operations are precise, the task level needs a reliable execution framework.
 
-### 1. 任务拆解成步骤
+### 4.1 Decompose the task into steps
 
-一句话任务先拆成显式步骤序列，每步包含：动作、目标（元素描述/坐标）、预期结果。例如"把桌面上的报告发给张三"拆成：打开微信 → 搜索张三 → 打开会话 → 点发送文件 → 选择桌面 → 双击报告.jpg → 点发送。
+A one-sentence task becomes an explicit step sequence, each step carrying: action, target (element description / coordinates), expected result. "Send the report on my desktop to Zhang San" becomes: open WeChat → search Zhang San → open the chat → click send-file → choose Desktop → double-click report.jpg → click send.
 
-### 2. 感知 → 定位 → 操作 → 确认 的循环
+### 4.2 The perceive → locate → act → verify loop
 
-每一步都走同一个闭环：
+Every step runs through the same closed loop:
 
 ```text
-# 伪代码：单步执行循环
+# Pseudocode: single-step execution loop
 loop:
-    截图 → OCR + 小模型 → 元素清单     # 感知
-    定位目标元素 → 坐标 + 置信度        # 定位
-    执行鼠标操作                        # 操作
-    验证预期结果是否出现                 # 确认
-    成功 → 下一步; 失败 → 重试或修正
+    screenshot → OCR + small model → element list     # perceive
+    locate the target → coordinate + confidence       # locate
+    perform the mouse operation                        # act
+    verify the expected result appeared                # verify
+    success → next step; failure → retry or adapt
 ```
 
-### 3. 卡点处理
+### 4.3 Handling snags
 
-真实桌面充满意外：弹窗突然出现、目标元素被遮挡、应用加载慢、网络卡住。执行框架必须有：
+Real desktops are full of surprises: popups appear out of nowhere, targets get covered, apps load slowly, networks stall. The framework must have:
 
-- **超时与重试**：每步独立超时，失败按策略重试（重定位而非重复点击同一坐标）；
-- **弹窗处理**：意外弹窗先识别再决策——关掉、绕过还是利用；
-- **失败快停**：连续多步验证失败就停下汇报，避免"越点越乱"造成不可逆后果。
+- **Timeouts and retries**: per-step timeouts; on failure, retry with re-localization rather than re-clicking the same blind coordinate;
+- **Popup handling**: recognize an unexpected dialog before deciding — dismiss it, route around it, or use it;
+- **Fail fast**: after several consecutive verification failures, stop and report instead of "clicking into a bigger mess" with irreversible consequences.
 
-## 五、成功案例沉淀为自动化脚本
+## 5. Turning Successful Runs into Automation Scripts
 
-同一个任务第二次执行时，不应该再从零开始感知和推理。我们把验证成功的执行轨迹**沉淀为可复放脚本**，这是速度提升最明显的一环。
+The second time a task runs, it should not re-do all the perception and reasoning from scratch. We distill **verified execution traces into replayable scripts** — the single biggest speedup in the whole system.
 
-### 1. 脚本里存什么
+### 5.1 What a script stores
 
-不是简单录屏回放，而是结构化的**步骤 + 验证锚点 + 参数**：
+Not a screen recording, but structured **steps + verification anchors + parameters**:
 
 ```text
-# 伪代码：沉淀的脚本结构
+# Pseudocode: structure of a distilled script
 Step {
     action: "click",
-    target: { semantic: "搜索按钮", anchor: "窗口右上角放大镜图标" },
-    verify: "搜索框获得焦点",     # 验证锚点：这一步做对了的标志
-    params: { text: "{song_name}" }   # 参数化：下次可替换
+    target: { semantic: "search button", anchor: "magnifier icon at the window's top-right" },
+    verify: "search box has focus",     # anchor: proof this step succeeded
+    params: { text: "{song_name}" }     # parameterized: replaceable next time
 }
 ```
 
-### 2. 秒级复放
+### 5.2 Second-level replay
 
-首次执行酷狗播放一首歌可能要 1~2 分钟（感知、推理、试错），脚本复放直接按步骤执行，**10 秒内完成**。因为省掉了所有"看屏幕想办法"的时间，只保留必要的加载等待。
+A first run of "play a song in the music player" may take 1~2 minutes (perception, reasoning, trial and error). Script replay executes the steps directly and finishes **within 10 seconds** — all the "look at the screen and figure it out" time is gone, only necessary loading waits remain.
 
-### 3. 锚点自愈：脚本不是脆弱的录像
+### 5.3 Anchor self-healing: scripts are not brittle recordings
 
-界面改版、按钮挪位置，脚本怎么办？关键在于**验证锚点 + 重新定位**：
+The UI gets redesigned, buttons move — then what? The key is **verification anchors + re-localization**:
 
-- 每步执行前先按锚点（语义描述 + 位置关系）找元素；
-- 找得到 → 直接按记录的相对位置操作（快）；
-- 找不到 → 回退到实时感知定位，完成后**更新脚本中的锚点**（自愈）。
+- Before each step, look up the element by anchor (semantic description + spatial relation);
+- Found → operate using the recorded relative position (fast);
+- Not found → fall back to real-time perception, then **update the script's anchor** (self-healing).
 
-这样脚本既保留了复放的速度，又有实时感知兜底，不会一次改版就全部作废。
+Scripts keep replay speed while real-time perception acts as the safety net — one UI redesign no longer invalidates everything.
 
-### 4. 只沉淀成功的
+### 5.4 Only save the successful
 
-只有**验证通过**的执行轨迹才允许沉淀为脚本。失败轨迹里混入脚本，等于把错误固化下来反复执行。
-
----
-
-## 引用的开源技术
-
-以上技术思路的实现，大量受益于以下优秀的开源项目与系统接口（在此说明来源并致谢）：
-
-| 技术 | 来源 | 在链路中的用途 |
-|------|------|----------------|
-| **UI-TARS** | 字节跳动 · [github.com/bytedance/UI-TARS](https://github.com/bytedance/UI-TARS) | GUI 截图理解与视觉元素定位的思路参考 |
-| **PaddleOCR** | 百度 · [github.com/PaddlePaddle/PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) | 屏幕文字识别（文字 + 坐标 + 置信度） |
-| **YOLO / Ultralytics** | Ultralytics · [github.com/ultralytics/ultralytics](https://github.com/ultralytics/ultralytics) | 轻量 UI 元素/图标目标检测 |
-| **Windows UI Automation** | 微软系统接口 · [官方文档](https://learn.microsoft.com/windows/win32/winauto/ui-automation-entry-page) | 控件树读取、元素属性与 Pattern 操作，与视觉通道互补 |
+Only execution traces that **passed verification** may be distilled into scripts. Baking failed traces into a script means preserving the mistake and replaying it forever.
 
 ---
 
-## 试试 PalatMind
+## Open-Source Technologies We Build On
 
-- 免费下载：https://palatmind.com/download/
-- 使用文档：https://palatmind.com/docs/
-- 遇到问题或想交流 GUI 自动化技术：[提个 Issue](https://github.com/tianyuleishen/palatmind-agent/issues)
+The implementation of the pipeline above benefits greatly from these outstanding open-source projects and system interfaces (sources acknowledged):
+
+| Technology | Source | Role in the pipeline |
+|------------|--------|----------------------|
+| **UI-TARS** | ByteDance · [github.com/bytedance/UI-TARS](https://github.com/bytedance/UI-TARS) | Reference for GUI screenshot understanding and visual element grounding |
+| **PaddleOCR** | Baidu · [github.com/PaddlePaddle/PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) | On-screen text recognition (text + box + confidence) |
+| **YOLO / Ultralytics** | Ultralytics · [github.com/ultralytics/ultralytics](https://github.com/ultralytics/ultralytics) | Lightweight UI element / icon detection |
+| **Windows UI Automation** | Microsoft system API · [official docs](https://learn.microsoft.com/windows/win32/winauto/ui-automation-entry-page) | Control tree reading, element properties and Patterns — complements the visual channel |
+
+---
+
+## Try PalatMind
+
+- Download: https://palatmind.com/download/
+- Documentation: https://palatmind.com/docs/
+- Questions or GUI automation discussions: [open an Issue](https://github.com/tianyuleishen/palatmind-agent/issues)
