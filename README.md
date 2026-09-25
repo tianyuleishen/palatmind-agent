@@ -49,7 +49,7 @@ PalatMind 是一款面向 Windows 的桌面级 AI 智能体（AI Agent）。与�
 
 ## 反馈与交流
 
-- 使用问题 / Bug 反馈：请提 [Issue](https://github.com/tianyuleishen/palatmind-ai/issues)
+- 使用问题 / Bug 反馈：请提 [Issue](https://github.com/tianyuleishen/palatmind-agent/issues)
 - 功能建议：欢迎在 Issue 中描述你的使用场景
 - 安装与使用问题优先查阅 [文档中心](https://palatmind.com/docs/) 与 [FAQ](https://palatmind.com/faq/)
 
